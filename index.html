@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Garage Room Planner — 3D + Blueprint Estimator</title>
+<title>Garage Renovation Planner — 3D + Blueprint Estimator</title>
 <style>
   :root{
     --bg:#f4f4f2; --card:#ffffff; --ink:#1c1c1e; --muted:#6b6b70;
-    --line:#e4e4e0; --acc:#0f766e; --acc-soft:#e6f4f2;
+    --line:#e4e4e0; --acc:#0f766e; --acc-soft:#e6f4f2; --danger:#b3261e;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
@@ -32,17 +32,33 @@
   .gl-fallback{height:420px;display:flex;align-items:center;justify-content:center;
     color:var(--muted);font-size:14px;background:#eef1f3}
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:14px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
   .field{display:flex;flex-direction:column;gap:5px}
   .flabel{font-size:12px;color:var(--muted);font-weight:600}
   input[type=number],select{font-size:15px;padding:9px 10px;border:1px solid var(--line);
     border-radius:9px;background:#fff;color:var(--ink);width:100%}
   input[type=number]:focus,select:focus{outline:2px solid var(--acc-soft);border-color:var(--acc)}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  input[type=color]{width:52px;height:34px;border:1px solid var(--line);border-radius:8px;
+    background:#fff;padding:2px;cursor:pointer}
   .check{display:flex;align-items:center;gap:9px;padding:9px 0;font-size:14px;cursor:pointer}
   .check input{width:17px;height:17px;accent-color:var(--acc)}
   .sec{font-size:12.5px;font-weight:700;color:var(--muted);text-transform:uppercase;
     letter-spacing:.06em;margin:18px 0 6px}
   .sec:first-child{margin-top:0}
   .prices{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .btn{display:inline-block;font-size:14px;font-weight:600;padding:9px 16px;border-radius:9px;
+    border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer}
+  .btn:hover{border-color:var(--acc);color:var(--acc)}
+  .btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+  .btn.primary:hover{background:#0d655e}
+  .btn.danger{color:var(--danger);border-color:#e8c4c1}
+  .btn.danger:hover{border-color:var(--danger)}
+  .btn.sm{font-size:12.5px;padding:6px 12px}
+  .wallrow{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    font-size:13.5px;padding:9px 0;border-bottom:1px solid var(--line)}
+  .jgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+  .subnote{font-size:12.5px;color:var(--muted);line-height:1.5;margin-top:8px}
   table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
   th{text-align:left;font-size:11.5px;color:var(--muted);text-transform:uppercase;
     letter-spacing:.05em;padding:8px 6px;border-bottom:1px solid var(--line)}
@@ -67,8 +83,10 @@
 <script>
 "use strict";
 /* ============================================================
-   Garage Room Planner — 3D preview + blueprint materials estimator
+   Garage Renovation Planner v2 — 3D model + blueprint estimator
    Single file. React 18 (createElement, no JSX) + Three.js r128.
+   Models Jay's actual garage from photos: exposed joists, loft,
+   washer/dryer nook, shelf unit, door opening, concrete floor.
    ============================================================ */
 const { useState, useEffect, useRef, useMemo } = React;
 const h = React.createElement;
@@ -77,33 +95,56 @@ const DOOR_W = 3, DOOR_H = 6.67, WIN_W = 3, WIN_H = 4;   // ft
 const DOOR_AREA = DOOR_W * DOOR_H;
 const WIN_AREA = WIN_W * WIN_H;
 const STUD_OC_FT = 16 / 12;                              // 16" on-center
+const LOFT_H = 6.5, LOFT_DEPTH = 4;                      // ft
+const LED_COUNT = 4;
 
 const FLOORING = {
-  lvp:      { name: "LVP",      price: 3.50 },
-  laminate: { name: "Laminate", price: 2.50 },
-  carpet:   { name: "Carpet",   price: 4.00 }
+  epoxy:    { name: "Epoxy coating", price: 2.50 },
+  lvp:      { name: "LVP",           price: 3.50 },
+  laminate: { name: "Laminate",      price: 2.50 }
 };
+const JUNK_CATS = [
+  { k: "totes",   label: "Storage totes" },
+  { k: "bikes",   label: "Bikes" },
+  { k: "bags",    label: "Trash bags" },
+  { k: "clothes", label: "Hanging clothes" },
+  { k: "boxes",   label: "Loose boxes" }
+];
 
 function money(n){ return "$" + n.toFixed(2); }
 function q2(n){ return (Math.round(n * 100) / 100).toString(); }
 function num(v, fb){ const n = parseFloat(v); return isNaN(n) ? fb : n; }
 
 /* ---------------- estimator math (pure) ---------------- */
-function calcEstimate(d, o, p){
+function calcEstimate(d, o, p, upg, partWalls){
   const W = d.w, D = d.d, H = d.h;
   const perim = 2 * (W + D);
   const wallGross = perim * H;
   const wallNet = Math.max(0, wallGross - DOOR_AREA - WIN_AREA);
   const ceilA = W * D;
+  const ceilDry = upg.ceiling === "drywall";
   const lines = [];
 
   // Drywall 4x8 sheets (32 sqft each), +10% waste
-  const dwArea = wallNet + (o.ceiling ? ceilA : 0);
+  const dwArea = wallNet + (ceilDry ? ceilA : 0);
   const sheets = Math.ceil(dwArea / 32 * 1.10);
   lines.push({ label: "Drywall 4x8 sheets", note: q2(dwArea) + " sqft + 10% waste",
     qty: sheets, unit: "sht", price: p.drywall, total: sheets * p.drywall });
 
-  // Wall framing studs, 16" OC, +10%
+  // Partition walls: drywall both sides + studs
+  partWalls.forEach(function(wl, i){
+    const a = wl.len * H * 2;
+    const s = Math.ceil(a / 32 * 1.10);
+    lines.push({ label: "Partition wall " + (i + 1) + " — drywall",
+      note: "both sides, " + q2(a) + " sqft + 10%",
+      qty: s, unit: "sht", price: p.drywall, total: s * p.drywall });
+    const st = Math.ceil(wl.len / STUD_OC_FT * 1.10);
+    lines.push({ label: "Partition wall " + (i + 1) + " — studs",
+      note: '16" on-center + 10%',
+      qty: st, unit: "ea", price: p.stud, total: st * p.stud });
+  });
+
+  // Wall framing studs (perimeter), 16" OC, +10%
   if (o.frame){
     const studs = Math.ceil(perim / STUD_OC_FT * 1.10);
     lines.push({ label: "Wall studs 2x4x8", note: '16" on-center + 10%',
@@ -118,16 +159,25 @@ function calcEstimate(d, o, p){
       qty: q2(ceilA), unit: "sqft", price: p.insCeil, total: ceilA * p.insCeil });
   }
 
-  // Flooring, +10% waste
-  const flSqft = Math.ceil(ceilA * 1.10);
-  lines.push({ label: "Flooring — " + FLOORING[o.flooring].name, note: q2(ceilA) + " sqft + 10% waste",
-    qty: flSqft, unit: "sqft", price: p.floor, total: flSqft * p.floor });
+  // Flooring
+  if (upg.flooring === "epoxy"){
+    lines.push({ label: "Epoxy floor coating", note: q2(ceilA) + " sqft",
+      qty: q2(ceilA), unit: "sqft", price: p.epoxy, total: ceilA * p.epoxy });
+  } else if (upg.flooring === "lvp" || upg.flooring === "laminate"){
+    const flSqft = Math.ceil(ceilA * 1.10);
+    lines.push({ label: "Flooring — " + FLOORING[upg.flooring].name,
+      note: q2(ceilA) + " sqft + 10% waste",
+      qty: flSqft, unit: "sqft", price: p.floor, total: flSqft * p.floor });
+  }
+  // bare concrete: no line item
 
-  // Paint: 350 sqft/gal, 2 coats
-  const paintArea = wallGross + (o.ceiling ? ceilA : 0);
-  const gals = Math.ceil(paintArea / 350 * 2);
-  lines.push({ label: "Paint (2 coats)", note: q2(paintArea) + " sqft @ 350 sqft/gal",
-    qty: gals, unit: "gal", price: p.paint, total: gals * p.paint });
+  // Paint only when walls are finished as painted drywall
+  if (upg.wallFinish === "painted"){
+    const paintArea = wallGross + (ceilDry ? ceilA : 0);
+    const gals = Math.ceil(paintArea / 350 * 2);
+    lines.push({ label: "Paint (2 coats)", note: q2(paintArea) + " sqft @ 350 sqft/gal",
+      qty: gals, unit: "gal", price: p.paint, total: gals * p.paint });
+  }
 
   // Electrical
   if (o.outlets > 0)
@@ -136,6 +186,9 @@ function calcEstimate(d, o, p){
     lines.push({ label: "Light switches", qty: o.switches, unit: "ea", price: p.sw, total: o.switches * p.sw });
   if (o.fixtures > 0)
     lines.push({ label: "Ceiling fixtures", qty: o.fixtures, unit: "ea", price: p.fixt, total: o.fixtures * p.fixt });
+  if (upg.lighting === "led")
+    lines.push({ label: "LED panel lights", note: LED_COUNT + " panels",
+      qty: LED_COUNT, unit: "ea", price: p.led, total: LED_COUNT * p.led });
 
   // Baseboard trim
   lines.push({ label: "Baseboard trim", note: q2(perim) + " ln ft",
@@ -144,7 +197,6 @@ function calcEstimate(d, o, p){
   const total = lines.reduce(function(s, l){ return s + l.total; }, 0);
   return { lines: lines, total: total, perim: perim, wallGross: wallGross, ceilA: ceilA };
 }
-
 /* ---------------- three.js scene ---------------- */
 function createScene(mount){
   const T = window.THREE;
@@ -201,12 +253,32 @@ function createScene(mount){
   const room = new T.Group();
   scene.add(room);
 
-  const wallMatA = new T.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.95 }); // back/left
-  const wallMatB = new T.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.95 }); // front (cutaway)
-  const wallMatC = new T.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.95 }); // right (cutaway)
-  const floorMat = new T.MeshStandardMaterial({ color: 0xb9b3a8, roughness: 0.9 });
-  const doorMat  = new T.MeshStandardMaterial({ color: 0x8a6f4d, roughness: 0.8 });
+  /* shared materials */
+  const wallMatA = new T.MeshStandardMaterial({ color: 0xe9e2d4, roughness: 0.95 }); // back/left
+  const wallMatB = new T.MeshStandardMaterial({ color: 0xe9e2d4, roughness: 0.95 }); // front (cutaway)
+  const wallMatC = new T.MeshStandardMaterial({ color: 0xe9e2d4, roughness: 0.95 }); // right (cutaway)
+  const floorMat = new T.MeshStandardMaterial({ color: 0xa8a5a0, roughness: 1 });
+  const trimMat  = new T.MeshStandardMaterial({ color: 0xf2f1ec, roughness: 0.9 });  // joists / loft (whitewashed)
+  const woodMat  = new T.MeshStandardMaterial({ color: 0x9a7b52, roughness: 0.85 }); // shelf unit
+  const applMat  = new T.MeshStandardMaterial({ color: 0xf6f6f6, roughness: 0.6 });   // washer/dryer
+  const darkMat  = new T.MeshStandardMaterial({ color: 0x3a3a3e, roughness: 0.7 });
+  const partMat  = new T.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.95 });   // partition walls
+  const toteMat  = new T.MeshStandardMaterial({ color: 0x8b9096, roughness: 0.8 });
+  const toteLid  = new T.MeshStandardMaterial({ color: 0x6f747a, roughness: 0.8 });
+  const cardMat  = new T.MeshStandardMaterial({ color: 0xd9b382, roughness: 0.95 });
+  const bagMat   = new T.MeshStandardMaterial({ color: 0x26262b, roughness: 0.55 });
+  const tireMat  = new T.MeshStandardMaterial({ color: 0x1e1e1e, roughness: 0.9 });
+  const frameMat = new T.MeshStandardMaterial({ color: 0xd8d8d8, roughness: 0.4, metalness: 0.5 });
+  const rodMat   = new T.MeshStandardMaterial({ color: 0xb9b9bd, roughness: 0.4, metalness: 0.6 });
+  const bulbMat  = new T.MeshBasicMaterial({ color: 0xfff2cc });
+  const ledMat   = new T.MeshBasicMaterial({ color: 0xffffff });
   const winMat   = new T.MeshStandardMaterial({ color: 0x9fc3d8, roughness: 0.25, metalness: 0.15 });
+  const clothMats = [0x7a8ba0, 0xa08b7a, 0x5d6e5a, 0x8a5d6e, 0x6e6e7a].map(function(c){
+    return new T.MeshStandardMaterial({ color: c, roughness: 1, side: T.DoubleSide });
+  });
+  const canMats = [0xc23b2e, 0x2e5fc2, 0xf0f0f0, 0x3fa34d].map(function(c){
+    return new T.MeshStandardMaterial({ color: c, roughness: 0.5, metalness: 0.3 });
+  });
 
   // dimension labels (HTML overlay)
   function mkLabel(){
@@ -240,30 +312,216 @@ function createScene(mount){
     m.castShadow = true; m.receiveShadow = true;
     return m;
   }
+  function cyl(r, hh, mat, x, y, z, seg){
+    const m = new T.Mesh(new T.CylinderGeometry(r, r, hh, seg || 14), mat);
+    m.position.set(x, y, z);
+    m.castShadow = true; m.receiveShadow = true;
+    return m;
+  }
+  function sph(r, mat, x, y, z, sy){
+    const m = new T.Mesh(new T.SphereGeometry(r, 14, 12), mat);
+    m.position.set(x, y, z);
+    if (sy) m.scale.y = sy;
+    m.castShadow = true; m.receiveShadow = true;
+    return m;
+  }
 
-  function rebuild(W, D, H, cutaway){
+  /* ---- junk prop builders ---- */
+  function buildTotes(W, D){
+    const g = new T.Group();
+    const stacks = [ { x: -W / 2 + 1.1, z: D / 2 - 1.6 }, { x: -W / 2 + 1.1, z: D / 2 - 3.4 } ];
+    stacks.forEach(function(s, si){
+      for (let i = 0; i < 3; i++){
+        const bx = s.x + (si === 1 ? 0.08 : -0.05);
+        g.add(box(1.6, 1.0, 1.1, toteMat, bx, 0.5 + i * 1.06, s.z));
+        g.add(box(1.66, 0.14, 1.16, toteLid, bx, 1.03 + i * 1.06, s.z));
+      }
+    });
+    return g;
+  }
+  function buildBike(){
+    const g = new T.Group();
+    const w1 = new T.Mesh(new T.TorusGeometry(1.02, 0.09, 8, 22), tireMat);
+    w1.position.set(-1.45, 1.02, 0); w1.castShadow = true;
+    const w2 = w1.clone(); w2.position.x = 1.45;
+    g.add(w1); g.add(w2);
+    const top = box(2.7, 0.13, 0.13, frameMat, 0, 1.95, 0); top.castShadow = false;
+    const down = box(2.2, 0.13, 0.13, frameMat, -0.5, 1.45, 0);
+    down.rotation.z = 0.5; down.castShadow = false;
+    const seat = box(0.55, 0.12, 0.32, darkMat, -1.15, 2.25, 0); seat.castShadow = false;
+    const post = box(0.1, 0.5, 0.1, frameMat, -1.15, 2.0, 0); post.castShadow = false;
+    const bar = box(0.12, 0.12, 0.7, darkMat, 1.35, 2.35, 0); bar.castShadow = false;
+    g.add(top); g.add(down); g.add(seat); g.add(post); g.add(bar);
+    return g;
+  }
+  function buildBikes(W, D){
+    const g = new T.Group();
+    const b1 = buildBike(); b1.position.set(W / 2 - 2.4, 0, 1.2); b1.rotation.y = 0.35;
+    const b2 = buildBike(); b2.position.set(W / 2 - 2.8, 0, -2.0); b2.rotation.y = -0.25;
+    g.add(b1); g.add(b2);
+    return g;
+  }
+  function buildBags(W, D){
+    const g = new T.Group();
+    const spots = [
+      [W / 2 - 1.9, 0.62, D / 2 - 1.9, 0.95], [W / 2 - 3.1, 0.55, D / 2 - 1.5, 0.85],
+      [W / 2 - 2.4, 0.5, D / 2 - 3.0, 0.8], [W / 2 - 1.5, 1.35, D / 2 - 2.5, 0.7]
+    ];
+    spots.forEach(function(s){ g.add(sph(s[3], bagMat, s[0], s[1], s[2], 0.72)); });
+    return g;
+  }
+  function buildClothes(W, D){
+    const g = new T.Group();
+    const rod = cyl(0.06, 5, rodMat, -W / 4, 5.6, -D / 2 + 0.7, 10);
+    rod.rotation.z = Math.PI / 2; rod.castShadow = false;
+    g.add(rod);
+    for (let i = 0; i < 5; i++){
+      const p = new T.Mesh(new T.PlaneGeometry(0.95, 1.5), clothMats[i % clothMats.length]);
+      p.position.set(-W / 4 - 2 + i, 4.75, -D / 2 + 0.7);
+      p.rotation.y = 0.15 * (i % 2 ? 1 : -1);
+      p.castShadow = true;
+      g.add(p);
+    }
+    return g;
+  }
+  function buildBoxes(W, D){
+    const g = new T.Group();
+    const defs = [
+      [1.6, 1.2, 1.4, 0.8, 0.6, 2.6], [1.3, 1.0, 1.1, -0.6, 0.5, 1.4],
+      [1.8, 1.4, 1.5, 1.8, 0.7, 0.4], [1.1, 0.9, 1.0, 0.4, 0.45, -1.8],
+      [1.4, 1.1, 1.2, -1.8, 0.55, -0.6]
+    ];
+    defs.forEach(function(b, i){
+      const m = box(b[0], b[1], b[2], cardMat, b[3], b[4], b[5]);
+      m.rotation.y = (i * 0.4) % 0.9 - 0.45;
+      g.add(m);
+    });
+    return g;
+  }
+
+  /* ---- main rebuild ---- */
+  function rebuild(cfg){
     clearGroup(room);
-    const t = 0.15; // wall thickness
-    // floor slab
+    const W = cfg.W, D = cfg.D, H = cfg.H, t = 0.15;
+    const upg = cfg.upg, junk = cfg.junk, cutaway = cfg.cutaway;
+
+    // floor finish
+    if (upg.flooring === "epoxy"){ floorMat.color.setHex(0xb9c4c9); floorMat.roughness = 0.35; }
+    else if (upg.flooring === "lvp"){ floorMat.color.setHex(0xb08d5f); floorMat.roughness = 0.7; }
+    else if (upg.flooring === "laminate"){ floorMat.color.setHex(0xc9a876); floorMat.roughness = 0.7; }
+    else { floorMat.color.setHex(0xa8a5a0); floorMat.roughness = 1; }
     room.add(box(W, 0.2, D, floorMat, 0, -0.1, 0));
-    // walls (inner faces flush with floor edges)
-    const back  = box(W + 2 * t, H, t, wallMatA, 0, H / 2, -D / 2 - t / 2);
-    const front = box(W + 2 * t, H, t, wallMatB, 0, H / 2,  D / 2 + t / 2);
-    const left  = box(t, H, D, wallMatA, -W / 2 - t / 2, H / 2, 0);
-    const right = box(t, H, D, wallMatC,  W / 2 + t / 2, H / 2, 0);
-    room.add(back); room.add(front); room.add(left); room.add(right);
-    // door visual on front wall (exterior face)
-    const door = box(DOOR_W, DOOR_H, 0.08, doorMat, W * 0.22, DOOR_H / 2, D / 2 + t + 0.045);
-    door.castShadow = false;
-    room.add(door);
+
+    // wall finish
+    const wc = upg.wallFinish === "painted" ? new T.Color(upg.wallColor) : new T.Color(0xe9e2d4);
+    wallMatA.color.copy(wc); wallMatB.color.copy(wc); wallMatC.color.copy(wc);
+
+    // back / left / right walls
+    room.add(box(W + 2 * t, H, t, wallMatA, 0, H / 2, -D / 2 - t / 2));
+    room.add(box(t, H, D, wallMatA, -W / 2 - t / 2, H / 2, 0));
+    const right = box(t, H, D, wallMatC, W / 2 + t / 2, H / 2, 0);
+    room.add(right);
+
+    // front wall with real door opening (centered)
+    if (H > DOOR_H + 0.3 && W > DOOR_W + 1){
+      const x0 = -(W / 2 + t), x1 = W / 2 + t, d0 = -DOOR_W / 2, d1 = DOOR_W / 2;
+      const lw = (d0 - x0), rw = (x1 - d1);
+      room.add(box(lw, H, t, wallMatB, x0 + lw / 2, H / 2, D / 2 + t / 2));
+      room.add(box(rw, H, t, wallMatB, d1 + rw / 2, H / 2, D / 2 + t / 2));
+      const hh = H - DOOR_H;
+      room.add(box(DOOR_W, hh, t, wallMatB, 0, DOOR_H + hh / 2, D / 2 + t / 2));
+    } else {
+      room.add(box(W + 2 * t, H, t, wallMatB, 0, H / 2, D / 2 + t / 2));
+    }
+
     // window visual on right wall
     const win = box(0.08, WIN_H, WIN_W, winMat, W / 2 + t + 0.045, 4.4, -D * 0.15);
     win.castShadow = false;
     room.add(win);
 
-    // cutaway: fade front + right walls (and their door/window)
-    const faded = [wallMatB, wallMatC, doorMat, winMat];
-    faded.forEach(function(m){
+    // ceiling: exposed whitewashed joists, or drywall panel
+    if (upg.ceiling === "drywall"){
+      room.add(box(W + 2 * t, 0.15, D + 2 * t, trimMat, 0, H - 0.075, 0));
+    } else {
+      for (let z = -D / 2 + 1; z <= D / 2 - 0.9; z += 2){
+        room.add(box(W, 0.45, 0.3, trimMat, 0, H - 0.225, z));
+      }
+      // perimeter rim boards
+      room.add(box(W, 0.45, 0.3, trimMat, 0, H - 0.225, -D / 2 + 0.15));
+      room.add(box(W, 0.45, 0.3, trimMat, 0, H - 0.225, D / 2 - 0.15));
+    }
+
+    // overhead loft platform along back wall (only if ceiling tall enough)
+    if (H >= LOFT_H + 0.7){
+      const pz = -D / 2 + LOFT_DEPTH / 2;
+      room.add(box(W - 1.2, 0.25, LOFT_DEPTH, trimMat, 0, LOFT_H, pz));
+      room.add(box(W - 1.2, 0.35, 0.25, trimMat, 0, LOFT_H - 0.28, -D / 2 + LOFT_DEPTH - 0.12));
+      [-1, 1].forEach(function(s){
+        room.add(box(0.3, LOFT_H, 0.3, trimMat, s * (W / 2 - 0.9), LOFT_H / 2, -D / 2 + LOFT_DEPTH - 0.15));
+      });
+    }
+
+    // washer + dryer pair in nook on left wall
+    const ax = -W / 2 + 1.35;
+    [[2.3], [-0.5]].forEach(function(zz){
+      const z = zz[0];
+      room.add(box(2.5, 3.5, 2.5, applMat, ax, 1.75, z));
+      room.add(box(2.5, 0.1, 2.5, darkMat, ax, 3.52, z));
+    });
+
+    // wooden shelf unit along back wall
+    (function(){
+      const sw = Math.min(6, W - 2), sx = W / 4, sz = -D / 2 + 0.85, sh = 6;
+      room.add(box(0.18, sh, 1.6, woodMat, sx - sw / 2, sh / 2, sz));
+      room.add(box(0.18, sh, 1.6, woodMat, sx + sw / 2, sh / 2, sz));
+      [0.4, 2.0, 3.6, 5.2, 5.95].forEach(function(y){
+        room.add(box(sw, 0.15, 1.6, woodMat, sx, y, sz));
+      });
+      for (let i = 0; i < 6; i++){
+        const cx = sx - sw / 2 + 0.7 + i * 0.85;
+        const cy = (i % 2 === 0) ? 2.35 : 3.95;
+        room.add(cyl(0.22, 0.5, canMats[i % canMats.length], cx, cy, sz));
+      }
+    })();
+
+    // junk, per category
+    if (junk.totes)   room.add(buildTotes(W, D));
+    if (junk.bikes)   room.add(buildBikes(W, D));
+    if (junk.bags)    room.add(buildBags(W, D));
+    if (junk.clothes) room.add(buildClothes(W, D));
+    if (junk.boxes)   room.add(buildBoxes(W, D));
+
+    // partition walls (drywall-finished segments)
+    (cfg.walls || []).forEach(function(wl){
+      const len = Math.max(0.5, wl.len);
+      if (wl.ori === "x") room.add(box(Math.min(len, W), H, 0.18, partMat, 0, H / 2, wl.pos));
+      else room.add(box(0.18, H, Math.min(len, D), partMat, wl.pos, H / 2, 0));
+    });
+
+    // lighting: bare bulb or LED panels
+    if (upg.lighting === "led"){
+      [[-W / 4, -D / 4], [W / 4, -D / 4], [-W / 4, D / 4], [W / 4, D / 4]].forEach(function(p2){
+        const panel = new T.Mesh(new T.PlaneGeometry(2, 1), ledMat);
+        panel.rotation.x = Math.PI / 2;
+        panel.position.set(p2[0], H - 0.12, p2[1]);
+        room.add(panel);
+        room.add(box(2.1, 0.08, 1.1, darkMat, p2[0], H - 0.06, p2[1]));
+      });
+      [[-W / 4, 0], [W / 4, 0]].forEach(function(p2){
+        const pl = new T.PointLight(0xffffff, 0.55, 40);
+        pl.position.set(p2[0], H - 1.5, p2[1]);
+        room.add(pl);
+      });
+    } else {
+      const cord = cyl(0.03, 1.2, darkMat, 0, H - 0.6, 0, 8); cord.castShadow = false;
+      room.add(cord);
+      const bulb = new T.Mesh(new T.SphereGeometry(0.18, 12, 10), bulbMat);
+      bulb.position.set(0, H - 1.3, 0);
+      room.add(bulb);
+    }
+
+    // cutaway: fade front + right walls and window
+    [wallMatB, wallMatC, winMat].forEach(function(m){
       m.transparent = !!cutaway;
       m.opacity = cutaway ? 0.15 : 1;
       m.needsUpdate = true;
@@ -316,6 +574,7 @@ function createScene(mount){
   };
 }
 
+
 /* ---------------- small form components ---------------- */
 function NumInput(p){
   return h("label", { className: "field" },
@@ -328,6 +587,133 @@ function Check(p){
   return h("label", { className: "check" },
     h("input", { type: "checkbox", checked: p.checked, onChange: function(e){ p.onChange(e.target.checked); } }),
     h("span", null, p.label)
+  );
+}
+function Select(p){
+  return h("label", { className: "field" },
+    h("span", { className: "flabel" }, p.label),
+    h("select", { value: p.value, onChange: function(e){ p.onChange(e.target.value); } },
+      p.options.map(function(o){ return h("option", { key: o.v, value: o.v }, o.t); })
+    )
+  );
+}
+function Btn(p){
+  return h("button", { type: "button", className: "btn" + (p.primary ? " primary" : "") + (p.danger ? " danger" : "") +
+      (p.sm ? " sm" : ""), onClick: p.onClick, style: p.style }, p.children);
+}
+
+/* ---------------- upgrades panel ---------------- */
+function UpgradesPanel(p){
+  const upg = p.upgrades;
+  const set = function(k){ return function(v){ p.setUpgrades(Object.assign({}, upg, (function(o){ o[k] = v; return o; })({}))); }; };
+  const setFlooring = function(v){
+    p.setUpgrades(Object.assign({}, upg, { flooring: v }));
+    if (v === "lvp" || v === "laminate")
+      p.setPrices(Object.assign({}, p.prices, { floor: FLOORING[v].price }));
+  };
+  return h("div", null,
+    h("div", { className: "sec" }, "Upgrades"),
+    h("div", { className: "row2" },
+      h(Select, { label: "Flooring", value: upg.flooring, onChange: setFlooring, options: [
+        { v: "concrete", t: "Bare concrete" },
+        { v: "epoxy", t: "Epoxy coating — $2.50/sqft" },
+        { v: "lvp", t: "LVP — $3.50/sqft" },
+        { v: "laminate", t: "Laminate — $2.50/sqft" }
+      ] }),
+      h(Select, { label: "Walls", value: upg.wallFinish, onChange: set("wallFinish"), options: [
+        { v: "unfinished", t: "Unfinished" },
+        { v: "painted", t: "Painted drywall" }
+      ] })
+    ),
+    h("div", { className: "row2" },
+      h(Select, { label: "Ceiling", value: upg.ceiling, onChange: set("ceiling"), options: [
+        { v: "joists", t: "Exposed joists" },
+        { v: "drywall", t: "Drywall ceiling" }
+      ] }),
+      h(Select, { label: "Lighting", value: upg.lighting, onChange: set("lighting"), options: [
+        { v: "bulb", t: "Bare bulb" },
+        { v: "led", t: "LED panel lights" }
+      ] })
+    ),
+    upg.wallFinish === "painted" ?
+      h("div", { className: "field", style: { marginTop: 10 } },
+        h("span", { className: "flabel" }, "Wall paint color"),
+        h("input", { type: "color", value: upg.wallColor,
+          onChange: function(e){ set("wallColor")(e.target.value); } })
+      ) : null
+  );
+}
+
+/* ---------------- junk / declutter panel ---------------- */
+function JunkPanel(p){
+  const allOff = { totes: false, bikes: false, bags: false, clothes: false, boxes: false };
+  const allOn  = { totes: true, bikes: true, bags: true, clothes: true, boxes: true };
+  return h("div", null,
+    h("div", { className: "sec" }, "Junk / declutter"),
+    h("div", { style: { display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" } },
+      h(Btn, { danger: true, sm: true, onClick: function(){ p.setJunk(allOff); } }, "Remove all junk"),
+      h(Btn, { sm: true, onClick: function(){ p.setJunk(allOn); } }, "Restore all")
+    ),
+    h("div", { className: "jgrid" },
+      JUNK_CATS.map(function(c){
+        return h(Check, { key: c.k, label: c.label, checked: p.junk[c.k],
+          onChange: function(v){ p.setJunk(Object.assign({}, p.junk, (function(o){ o[c.k] = v; return o; })({}))); } });
+      })
+    ),
+    h("div", { className: "subnote" }, "Decluttering is visual only — it does not change the materials estimate.")
+  );
+}
+
+/* ---------------- partition walls panel ---------------- */
+let wallSeq = 1;
+function WallsPanel(p){
+  const dims = p.dims;
+  const span = p.form.ori === "x" ? dims.w : dims.d;
+  const lo = -span / 2 + 0.4, hi = span / 2 - 0.4;
+  const setForm = function(k, v){ p.setForm(Object.assign({}, p.form, (function(o){ o[k] = v; return o; })({}))); };
+
+  const addWall = function(){
+    const len = Math.max(1, Math.min(p.form.len, span));
+    const pos = Math.max(lo, Math.min(hi, p.form.pos));
+    p.setWalls(p.walls.concat([{ id: wallSeq++, ori: p.form.ori, pos: pos, len: len }]));
+  };
+
+  return h("div", null,
+    h("div", { className: "sec" }, "Partition walls"),
+    h("div", { className: "row2" },
+      h(Select, { label: "Runs along", value: p.form.ori, options: [
+          { v: "x", t: "X — across the width" },
+          { v: "z", t: "Z — across the depth" }
+        ],
+        onChange: function(v){ p.setForm({ ori: v, pos: 0, len: v === "x" ? dims.w : dims.d }); } }),
+      h(NumInput, { label: "Length (ft)", value: p.form.len, min: 1, step: 0.5,
+        onChange: function(v){ setForm("len", v); } })
+    ),
+    h("div", { className: "field", style: { marginTop: 10 } },
+      h("span", { className: "flabel" },
+        "Position across the room: " + p.form.pos.toFixed(1) + " ft" +
+        (p.form.ori === "x" ? " (0 = middle of depth)" : " (0 = middle of width)")),
+      h("input", { type: "range", min: lo.toFixed(2), max: hi.toFixed(2), step: 0.25,
+        value: Math.max(lo, Math.min(hi, p.form.pos)),
+        onChange: function(e){ setForm("pos", parseFloat(e.target.value)); } })
+    ),
+    h("div", { style: { marginTop: 10 } },
+      h(Btn, { primary: true, sm: true, onClick: addWall }, "Add partition wall")
+    ),
+    p.walls.length > 0 ?
+      h("div", { style: { marginTop: 8 } },
+        p.walls.map(function(wl, i){
+          return h("div", { className: "wallrow", key: wl.id },
+            h("span", null, "Wall " + (i + 1) + " — along " + wl.ori.toUpperCase() +
+              " @ " + wl.pos.toFixed(1) + " ft · " + wl.len + " ft long"),
+            h(Btn, { danger: true, sm: true,
+              onClick: function(){ p.setWalls(p.walls.filter(function(x){ return x.id !== wl.id; })); } },
+              "Remove")
+          );
+        })
+      ) : null,
+    h("div", { className: "subnote" },
+      "Each wall is estimated with drywall on both sides plus 16\u2033 on-center studs.")
   );
 }
 
@@ -346,36 +732,49 @@ function RoomView(p){
     return function(){ try { t.dispose(); } catch (e){} threeRef.current = null; };
   }, []);
 
+  const cfgKey = JSON.stringify({ d: p.dims, c: p.cutaway, u: p.upgrades, j: p.junk, w: p.walls });
   useEffect(function(){
     const t = threeRef.current;
-    if (t){ try { t.rebuild(p.dims.w, p.dims.d, p.dims.h, p.cutaway); } catch (e){} }
-  }, [p.dims.w, p.dims.d, p.dims.h, p.cutaway]);
-
-  if (!ok)
-    return h("div", { className: "gl-fallback" }, "3D preview unavailable — estimator below still works.");
+    if (t){
+      try {
+        t.rebuild({ W: p.dims.w, D: p.dims.d, H: p.dims.h, cutaway: p.cutaway,
+          upg: p.upgrades, junk: p.junk, walls: p.walls });
+      } catch (e){}
+    }
+  }, [cfgKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return h("div", null,
-    h("div", { className: "viewport", ref: mountRef },
-      h("div", { className: "hint" }, "drag to orbit · scroll to zoom")
-    ),
-    h("div", { className: "row3", style: { padding: "0 2px" } },
-      h(NumInput, { label: "Width (ft)", value: p.dims.w, min: 1, step: 0.5,
-        onChange: function(v){ p.setDims({ w: Math.max(1, v), d: p.dims.d, h: p.dims.h }); } }),
-      h(NumInput, { label: "Depth (ft)", value: p.dims.d, min: 1, step: 0.5,
-        onChange: function(v){ p.setDims({ w: p.dims.w, d: Math.max(1, v), h: p.dims.h }); } }),
-      h(NumInput, { label: "Ceiling height (ft)", value: p.dims.h, min: 1, step: 0.5,
-        onChange: function(v){ p.setDims({ w: p.dims.w, d: p.dims.d, h: Math.max(1, v) }); } })
-    ),
-    h("div", { style: { padding: "4px 2px 0" } },
-      h(Check, { label: "Cutaway view (see inside)", checked: p.cutaway, onChange: p.setCutaway })
+    ok ?
+      h("div", { className: "viewport", ref: mountRef },
+        h("div", { className: "hint" }, "drag to orbit · scroll to zoom")
+      ) :
+      h("div", { className: "gl-fallback" }, "3D preview unavailable on this device — all panels and the estimator below still work."),
+    h("div", { style: { padding: "0 18px" } },
+      h("div", { className: "row3" },
+        h(NumInput, { label: "Width (ft)", value: p.dims.w, min: 1, step: 0.5,
+          onChange: function(v){ p.setDims({ w: Math.max(1, v), d: p.dims.d, h: p.dims.h }); } }),
+        h(NumInput, { label: "Depth (ft)", value: p.dims.d, min: 1, step: 0.5,
+          onChange: function(v){ p.setDims({ w: p.dims.w, d: Math.max(1, v), h: p.dims.h }); } }),
+        h(NumInput, { label: "Ceiling height (ft)", value: p.dims.h, min: 1, step: 0.5,
+          onChange: function(v){ p.setDims({ w: p.dims.w, d: p.dims.d, h: Math.max(1, v) }); } })
+      ),
+      h("div", { style: { padding: "4px 2px 0" } },
+        h(Check, { label: "Cutaway view (see inside)", checked: p.cutaway, onChange: p.setCutaway })
+      ),
+      h(UpgradesPanel, { upgrades: p.upgrades, setUpgrades: p.setUpgrades,
+        prices: p.prices, setPrices: p.setPrices }),
+      h(JunkPanel, { junk: p.junk, setJunk: p.setJunk }),
+      h(WallsPanel, { dims: p.dims, walls: p.walls, setWalls: p.setWalls,
+        form: p.wallForm, setForm: p.setWallForm }),
+      h("div", { style: { height: 6 } })
     )
   );
 }
 
 /* ---------------- estimator panel ---------------- */
 function Estimator(p){
-  const est = useMemo(function(){ return calcEstimate(p.dims, p.opts, p.prices); },
-    [p.dims, p.opts, p.prices]);
+  const est = useMemo(function(){ return calcEstimate(p.dims, p.opts, p.prices, p.upgrades, p.walls); },
+    [p.dims, p.opts, p.prices, p.upgrades, p.walls]);
   const setOpt = function(k){ return function(v){ p.setOpts(Object.assign({}, p.opts, (function(o){ o[k] = v; return o; })({}))); }; };
   const setPrice = function(k){ return function(v){ p.setPrices(Object.assign({}, p.prices, (function(o){ o[k] = v; return o; })({}))); }; };
 
@@ -399,26 +798,15 @@ function Estimator(p){
     h("div", { className: "stats" },
       h("span", null, "Floor: ", h("b", null, q2(est.ceilA) + " sqft")),
       h("span", null, "Walls: ", h("b", null, q2(est.wallGross) + " sqft")),
-      h("span", null, "Perimeter: ", h("b", null, q2(est.perim) + " ft"))
+      h("span", null, "Perimeter: ", h("b", null, q2(est.perim) + " ft")),
+      p.walls.length > 0 ? h("span", null, "Partition walls: ", h("b", null, p.walls.length)) : null
     ),
 
     h("div", { className: "sec" }, "Options"),
-    h(Check, { label: "Include ceiling drywall", checked: p.opts.ceiling, onChange: setOpt("ceiling") }),
     h(Check, { label: "Frame new walls (2x4 studs)", checked: p.opts.frame, onChange: setOpt("frame") }),
     h(Check, { label: "Insulation (walls R-13 + ceiling R-30)", checked: p.opts.insul, onChange: setOpt("insul") }),
-    h("label", { className: "field", style: { marginTop: 10 } },
-      h("span", { className: "flabel" }, "Flooring type"),
-      h("select", { value: p.opts.flooring, onChange: function(e){
-          const k = e.target.value;
-          p.setOpts(Object.assign({}, p.opts, { flooring: k }));
-          p.setPrices(Object.assign({}, p.prices, { floor: FLOORING[k].price }));
-        } },
-        Object.keys(FLOORING).map(function(k){
-          return h("option", { key: k, value: k },
-            FLOORING[k].name + " — " + money(FLOORING[k].price) + "/sqft");
-        })
-      )
-    ),
+    h("div", { className: "subnote" },
+      "Flooring, wall paint, ceiling drywall, and lighting are set in the Upgrades panel next to the 3D view."),
 
     h("div", { className: "sec" }, "Electrical (quantities)"),
     h("div", { className: "row3" },
@@ -434,10 +822,12 @@ function Estimator(p){
       h(NumInput, { label: "Insul. wall ($/sqft)", value: p.prices.insWall, min: 0, step: 0.05, onChange: setPrice("insWall") }),
       h(NumInput, { label: "Insul. ceil ($/sqft)", value: p.prices.insCeil, min: 0, step: 0.05, onChange: setPrice("insCeil") }),
       h(NumInput, { label: "Flooring ($/sqft)", value: p.prices.floor, min: 0, step: 0.1, onChange: setPrice("floor") }),
+      h(NumInput, { label: "Epoxy ($/sqft)", value: p.prices.epoxy, min: 0, step: 0.1, onChange: setPrice("epoxy") }),
       h(NumInput, { label: "Paint ($/gal)", value: p.prices.paint, min: 0, step: 1, onChange: setPrice("paint") }),
       h(NumInput, { label: "Outlet ($/ea)", value: p.prices.outlet, min: 0, step: 0.5, onChange: setPrice("outlet") }),
       h(NumInput, { label: "Switch ($/ea)", value: p.prices.sw, min: 0, step: 0.5, onChange: setPrice("sw") }),
       h(NumInput, { label: "Fixture ($/ea)", value: p.prices.fixt, min: 0, step: 1, onChange: setPrice("fixt") }),
+      h(NumInput, { label: "LED panel ($/ea)", value: p.prices.led, min: 0, step: 1, onChange: setPrice("led") }),
       h(NumInput, { label: "Baseboard ($/ln ft)", value: p.prices.base, min: 0, step: 0.1, onChange: setPrice("base") })
     ),
 
@@ -468,36 +858,53 @@ function App(){
   const [dims, setDims] = useState({ w: 11, d: 12, h: 8 });
   const [cutaway, setCutaway] = useState(true);
   const [opts, setOpts] = useState({
-    ceiling: true, frame: true, insul: true, flooring: "lvp",
+    frame: true, insul: true,
     outlets: 6, switches: 2, fixtures: 1
   });
   const [prices, setPrices] = useState({
     drywall: 16, stud: 4.50, insWall: 0.65, insCeil: 1.00,
-    floor: FLOORING.lvp.price, paint: 45,
-    outlet: 8, sw: 6, fixt: 35, base: 1.80
+    floor: FLOORING.lvp.price, epoxy: FLOORING.epoxy.price, paint: 45,
+    outlet: 8, sw: 6, fixt: 35, led: 45, base: 1.80
   });
+  const [upgrades, setUpgrades] = useState({
+    flooring: "concrete", wallFinish: "unfinished", wallColor: "#f5f2ea",
+    ceiling: "joists", lighting: "bulb"
+  });
+  const [junk, setJunk] = useState({ totes: true, bikes: true, bags: true, clothes: true, boxes: true });
+  const [walls, setWalls] = useState([]);
+  const [wallForm, setWallForm] = useState({ ori: "x", pos: 0, len: 11 });
 
   return h("div", { className: "wrap" },
     h("header", null,
-      h("h1", null, "Garage Room Planner"),
-      h("p", null, "3D preview + blueprint materials estimator for the garage conversion")
+      h("h1", null, "Garage Renovation Planner"),
+      h("p", null, "True-to-photos 3D model + blueprint materials estimator")
     ),
     h("div", { className: "grid" },
       h("div", { className: "card" },
-        h("div", { className: "card-h" }, "3D room view"),
+        h("div", { className: "card-h" }, "3D garage model"),
         h("div", { className: "card-b", style: { padding: 0 } },
-          h(RoomView, { dims: dims, setDims: setDims, cutaway: cutaway, setCutaway: setCutaway })
+          h(RoomView, {
+            dims: dims, setDims: setDims, cutaway: cutaway, setCutaway: setCutaway,
+            upgrades: upgrades, setUpgrades: setUpgrades,
+            prices: prices, setPrices: setPrices,
+            junk: junk, setJunk: setJunk,
+            walls: walls, setWalls: setWalls,
+            wallForm: wallForm, setWallForm: setWallForm
+          })
         ),
         h("div", { className: "card-b", style: { paddingTop: 14 } },
           h("div", { style: { fontSize: 13, color: "#6b6b70", lineHeight: 1.5 } },
-            "Door (3 × 6.67 ft) and window (3 × 4 ft) are deducted from the drywall takeoff."
+            "Door opening (3 × 6.67 ft) and window (3 × 4 ft) are deducted from the drywall takeoff. " +
+            "The loft, appliances, and shelf unit are existing structure — not in the estimate."
           )
         )
       ),
       h("div", { className: "card" },
         h("div", { className: "card-h" }, "Blueprint estimator"),
         h("div", { className: "card-b" },
-          h(Estimator, { dims: dims, opts: opts, setOpts: setOpts, prices: prices, setPrices: setPrices })
+          h(Estimator, { dims: dims, opts: opts, setOpts: setOpts,
+            prices: prices, setPrices: setPrices,
+            upgrades: upgrades, walls: walls })
         )
       )
     )
