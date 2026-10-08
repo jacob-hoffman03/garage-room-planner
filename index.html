@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Garage Room Planner — 3D + Blueprint Estimator</title>
+<style>
+  :root{
+    --bg:#f4f4f2; --card:#ffffff; --ink:#1c1c1e; --muted:#6b6b70;
+    --line:#e4e4e0; --acc:#0f766e; --acc-soft:#e6f4f2;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1120px;margin:0 auto;padding:20px 16px 48px}
+  header{margin:4px 0 18px}
+  header h1{font-size:24px;margin:0 0 4px;letter-spacing:-.02em}
+  header p{margin:0;color:var(--muted);font-size:14px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  @media (max-width:900px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 1px 3px rgba(0,0,0,.05);overflow:hidden}
+  .card-h{padding:14px 18px;border-bottom:1px solid var(--line);font-weight:650;font-size:15px}
+  .card-b{padding:16px 18px}
+  .viewport{position:relative;height:420px;background:#eef1f3;touch-action:none}
+  .viewport canvas{display:block}
+  .dim-label{position:absolute;top:0;left:0;pointer-events:none;background:rgba(20,20,22,.78);
+    color:#fff;font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .hint{position:absolute;left:12px;bottom:10px;font-size:11.5px;color:var(--muted);
+    background:rgba(255,255,255,.75);padding:3px 9px;border-radius:12px;pointer-events:none}
+  .gl-fallback{height:420px;display:flex;align-items:center;justify-content:center;
+    color:var(--muted);font-size:14px;background:#eef1f3}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:14px}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .flabel{font-size:12px;color:var(--muted);font-weight:600}
+  input[type=number],select{font-size:15px;padding:9px 10px;border:1px solid var(--line);
+    border-radius:9px;background:#fff;color:var(--ink);width:100%}
+  input[type=number]:focus,select:focus{outline:2px solid var(--acc-soft);border-color:var(--acc)}
+  .check{display:flex;align-items:center;gap:9px;padding:9px 0;font-size:14px;cursor:pointer}
+  .check input{width:17px;height:17px;accent-color:var(--acc)}
+  .sec{font-size:12.5px;font-weight:700;color:var(--muted);text-transform:uppercase;
+    letter-spacing:.06em;margin:18px 0 6px}
+  .sec:first-child{margin-top:0}
+  .prices{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+  th{text-align:left;font-size:11.5px;color:var(--muted);text-transform:uppercase;
+    letter-spacing:.05em;padding:8px 6px;border-bottom:1px solid var(--line)}
+  td{padding:9px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+  td.n, th.n{text-align:right;white-space:nowrap}
+  .lnote{display:block;font-size:11.5px;color:var(--muted);font-weight:400;margin-top:2px}
+  tr.grand td{border-bottom:none;border-top:2px solid var(--ink);font-weight:700;font-size:15px;padding-top:12px}
+  .roughin{margin-top:12px;font-size:12.5px;color:var(--muted);background:#faf9f6;
+    border:1px dashed var(--line);border-radius:9px;padding:10px 12px;line-height:1.45}
+  .stats{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-bottom:4px}
+  .stats b{color:var(--ink)}
+  .tablewrap{overflow-x:auto}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+"use strict";
+/* ============================================================
+   Garage Room Planner — 3D preview + blueprint materials estimator
+   Single file. React 18 (createElement, no JSX) + Three.js r128.
+   ============================================================ */
+const { useState, useEffect, useRef, useMemo } = React;
+const h = React.createElement;
+
+const DOOR_W = 3, DOOR_H = 6.67, WIN_W = 3, WIN_H = 4;   // ft
+const DOOR_AREA = DOOR_W * DOOR_H;
+const WIN_AREA = WIN_W * WIN_H;
+const STUD_OC_FT = 16 / 12;                              // 16" on-center
+
+const FLOORING = {
+  lvp:      { name: "LVP",      price: 3.50 },
+  laminate: { name: "Laminate", price: 2.50 },
+  carpet:   { name: "Carpet",   price: 4.00 }
+};
+
+function money(n){ return "$" + n.toFixed(2); }
+function q2(n){ return (Math.round(n * 100) / 100).toString(); }
+function num(v, fb){ const n = parseFloat(v); return isNaN(n) ? fb : n; }
+
+/* ---------------- estimator math (pure) ---------------- */
+function calcEstimate(d, o, p){
+  const W = d.w, D = d.d, H = d.h;
+  const perim = 2 * (W + D);
+  const wallGross = perim * H;
+  const wallNet = Math.max(0, wallGross - DOOR_AREA - WIN_AREA);
+  const ceilA = W * D;
+  const lines = [];
+
+  // Drywall 4x8 sheets (32 sqft each), +10% waste
+  const dwArea = wallNet + (o.ceiling ? ceilA : 0);
+  const sheets = Math.ceil(dwArea / 32 * 1.10);
+  lines.push({ label: "Drywall 4x8 sheets", note: q2(dwArea) + " sqft + 10% waste",
+    qty: sheets, unit: "sht", price: p.drywall, total: sheets * p.drywall });
+
+  // Wall framing studs, 16" OC, +10%
+  if (o.frame){
+    const studs = Math.ceil(perim / STUD_OC_FT * 1.10);
+    lines.push({ label: "Wall studs 2x4x8", note: '16" on-center + 10%',
+      qty: studs, unit: "ea", price: p.stud, total: studs * p.stud });
+  }
+
+  // Insulation
+  if (o.insul){
+    lines.push({ label: "Insulation R-13 (walls)", note: q2(wallGross) + " sqft",
+      qty: q2(wallGross), unit: "sqft", price: p.insWall, total: wallGross * p.insWall });
+    lines.push({ label: "Insulation R-30 (ceiling)", note: q2(ceilA) + " sqft",
+      qty: q2(ceilA), unit: "sqft", price: p.insCeil, total: ceilA * p.insCeil });
+  }
+
+  // Flooring, +10% waste
+  const flSqft = Math.ceil(ceilA * 1.10);
+  lines.push({ label: "Flooring — " + FLOORING[o.flooring].name, note: q2(ceilA) + " sqft + 10% waste",
+    qty: flSqft, unit: "sqft", price: p.floor, total: flSqft * p.floor });
+
+  // Paint: 350 sqft/gal, 2 coats
+  const paintArea = wallGross + (o.ceiling ? ceilA : 0);
+  const gals = Math.ceil(paintArea / 350 * 2);
+  lines.push({ label: "Paint (2 coats)", note: q2(paintArea) + " sqft @ 350 sqft/gal",
+    qty: gals, unit: "gal", price: p.paint, total: gals * p.paint });
+
+  // Electrical
+  if (o.outlets > 0)
+    lines.push({ label: "Outlets", qty: o.outlets, unit: "ea", price: p.outlet, total: o.outlets * p.outlet });
+  if (o.switches > 0)
+    lines.push({ label: "Light switches", qty: o.switches, unit: "ea", price: p.sw, total: o.switches * p.sw });
+  if (o.fixtures > 0)
+    lines.push({ label: "Ceiling fixtures", qty: o.fixtures, unit: "ea", price: p.fixt, total: o.fixtures * p.fixt });
+
+  // Baseboard trim
+  lines.push({ label: "Baseboard trim", note: q2(perim) + " ln ft",
+    qty: q2(perim), unit: "ln ft", price: p.base, total: perim * p.base });
+
+  const total = lines.reduce(function(s, l){ return s + l.total; }, 0);
+  return { lines: lines, total: total, perim: perim, wallGross: wallGross, ceilA: ceilA };
+}
+
+/* ---------------- three.js scene ---------------- */
+function createScene(mount){
+  const T = window.THREE;
+  const width = mount.clientWidth || 600, height = 420;
+
+  const scene = new T.Scene();
+  scene.background = new T.Color(0xeef1f3);
+  scene.fog = new T.Fog(0xeef1f3, 40, 90);
+
+  const camera = new T.PerspectiveCamera(45, width / height, 0.1, 200);
+
+  const renderer = new T.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(width, height);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = T.PCFSoftShadowMap;
+  mount.appendChild(renderer.domElement);
+
+  const controls = new T.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.maxPolarAngle = Math.PI / 2 - 0.03;
+  controls.minDistance = 4;
+  controls.maxDistance = 70;
+
+  // lighting
+  scene.add(new T.HemisphereLight(0xffffff, 0x9a938a, 0.75));
+  const sun = new T.DirectionalLight(0xfff6e8, 1.05);
+  sun.position.set(12, 16, 9);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -14; sun.shadow.camera.right = 14;
+  sun.shadow.camera.top = 14; sun.shadow.camera.bottom = -14;
+  sun.shadow.camera.far = 60;
+  sun.shadow.bias = -0.0004;
+  scene.add(sun);
+  const fill = new T.DirectionalLight(0xdfe8ff, 0.28);
+  fill.position.set(-10, 8, -8);
+  scene.add(fill);
+
+  // ground
+  const ground = new T.Mesh(
+    new T.PlaneGeometry(120, 120),
+    new T.MeshStandardMaterial({ color: 0xdde2e5, roughness: 1 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.21;
+  ground.receiveShadow = true;
+  scene.add(ground);
+  const grid = new T.GridHelper(60, 60, 0xb9c2c7, 0xccd4d9);
+  grid.position.y = -0.2;
+  scene.add(grid);
+
+  const room = new T.Group();
+  scene.add(room);
+
+  const wallMatA = new T.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.95 }); // back/left
+  const wallMatB = new T.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.95 }); // front (cutaway)
+  const wallMatC = new T.MeshStandardMaterial({ color: 0xf4f0e6, roughness: 0.95 }); // right (cutaway)
+  const floorMat = new T.MeshStandardMaterial({ color: 0xb9b3a8, roughness: 0.9 });
+  const doorMat  = new T.MeshStandardMaterial({ color: 0x8a6f4d, roughness: 0.8 });
+  const winMat   = new T.MeshStandardMaterial({ color: 0x9fc3d8, roughness: 0.25, metalness: 0.15 });
+
+  // dimension labels (HTML overlay)
+  function mkLabel(){
+    const el = document.createElement("div");
+    el.className = "dim-label";
+    mount.appendChild(el);
+    return el;
+  }
+  const lW = mkLabel(), lD = mkLabel(), lH = mkLabel();
+  const anchors = { w: new T.Vector3(), d: new T.Vector3(), h: new T.Vector3() };
+  const tmpV = new T.Vector3();
+  function placeLabel(el, v){
+    tmpV.copy(v).project(camera);
+    const x = (tmpV.x * 0.5 + 0.5) * width;
+    const y = (-tmpV.y * 0.5 + 0.5) * height;
+    el.style.display = tmpV.z < 1 ? "block" : "none";
+    el.style.transform = "translate(-50%,-50%) translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px)";
+  }
+
+  function clearGroup(g){
+    for (let i = g.children.length - 1; i >= 0; i--){
+      const c = g.children[i];
+      g.remove(c);
+      if (c.geometry) c.geometry.dispose();
+    }
+  }
+
+  function box(w2, h2, d2, mat, x, y, z){
+    const m = new T.Mesh(new T.BoxGeometry(w2, h2, d2), mat);
+    m.position.set(x, y, z);
+    m.castShadow = true; m.receiveShadow = true;
+    return m;
+  }
+
+  function rebuild(W, D, H, cutaway){
+    clearGroup(room);
+    const t = 0.15; // wall thickness
+    // floor slab
+    room.add(box(W, 0.2, D, floorMat, 0, -0.1, 0));
+    // walls (inner faces flush with floor edges)
+    const back  = box(W + 2 * t, H, t, wallMatA, 0, H / 2, -D / 2 - t / 2);
+    const front = box(W + 2 * t, H, t, wallMatB, 0, H / 2,  D / 2 + t / 2);
+    const left  = box(t, H, D, wallMatA, -W / 2 - t / 2, H / 2, 0);
+    const right = box(t, H, D, wallMatC,  W / 2 + t / 2, H / 2, 0);
+    room.add(back); room.add(front); room.add(left); room.add(right);
+    // door visual on front wall (exterior face)
+    const door = box(DOOR_W, DOOR_H, 0.08, doorMat, W * 0.22, DOOR_H / 2, D / 2 + t + 0.045);
+    door.castShadow = false;
+    room.add(door);
+    // window visual on right wall
+    const win = box(0.08, WIN_H, WIN_W, winMat, W / 2 + t + 0.045, 4.4, -D * 0.15);
+    win.castShadow = false;
+    room.add(win);
+
+    // cutaway: fade front + right walls (and their door/window)
+    const faded = [wallMatB, wallMatC, doorMat, winMat];
+    faded.forEach(function(m){
+      m.transparent = !!cutaway;
+      m.opacity = cutaway ? 0.15 : 1;
+      m.needsUpdate = true;
+    });
+
+    // camera framing
+    const dist = Math.max(W, D) * 1.85 + H * 0.9;
+    camera.position.set(dist * 0.82, dist * 0.62, dist * 0.82);
+    controls.target.set(0, H * 0.38, 0);
+    controls.update();
+
+    // label anchors + text
+    anchors.w.set(0, 0.15, D / 2 + 1.4);
+    anchors.d.set(W / 2 + 1.4, 0.15, 0);
+    anchors.h.set(-W / 2 - 0.5, H / 2, D / 2 + 0.5);
+    lW.textContent = W + " ft";
+    lD.textContent = D + " ft";
+    lH.textContent = H + " ft";
+  }
+
+  let raf = 0, alive = true;
+  function tick(){
+    if (!alive) return;
+    raf = requestAnimationFrame(tick);
+    controls.update();
+    placeLabel(lW, anchors.w); placeLabel(lD, anchors.d); placeLabel(lH, anchors.h);
+    renderer.render(scene, camera);
+  }
+  tick();
+
+  function onResize(){
+    const w2 = mount.clientWidth || 600;
+    camera.aspect = w2 / height;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w2, height);
+  }
+  window.addEventListener("resize", onResize);
+
+  return {
+    rebuild: rebuild,
+    dispose: function(){
+      alive = false;
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+      clearGroup(room);
+      renderer.dispose();
+      if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
+      [lW, lD, lH].forEach(function(el){ if (el.parentNode === mount) mount.removeChild(el); });
+    }
+  };
+}
+
+/* ---------------- small form components ---------------- */
+function NumInput(p){
+  return h("label", { className: "field" },
+    h("span", { className: "flabel" }, p.label),
+    h("input", { type: "number", min: p.min, step: p.step || "any", value: p.value,
+      onChange: function(e){ p.onChange(num(e.target.value, p.fallback !== undefined ? p.fallback : 0)); } })
+  );
+}
+function Check(p){
+  return h("label", { className: "check" },
+    h("input", { type: "checkbox", checked: p.checked, onChange: function(e){ p.onChange(e.target.checked); } }),
+    h("span", null, p.label)
+  );
+}
+
+/* ---------------- 3D room view ---------------- */
+function RoomView(p){
+  const mountRef = useRef(null);
+  const threeRef = useRef(null);
+  const [ok, setOk] = useState(true);
+
+  useEffect(function(){
+    if (!window.THREE){ setOk(false); return; }
+    try {
+      threeRef.current = createScene(mountRef.current);
+    } catch (err){ setOk(false); return; }
+    const t = threeRef.current;
+    return function(){ try { t.dispose(); } catch (e){} threeRef.current = null; };
+  }, []);
+
+  useEffect(function(){
+    const t = threeRef.current;
+    if (t){ try { t.rebuild(p.dims.w, p.dims.d, p.dims.h, p.cutaway); } catch (e){} }
+  }, [p.dims.w, p.dims.d, p.dims.h, p.cutaway]);
+
+  if (!ok)
+    return h("div", { className: "gl-fallback" }, "3D preview unavailable — estimator below still works.");
+
+  return h("div", null,
+    h("div", { className: "viewport", ref: mountRef },
+      h("div", { className: "hint" }, "drag to orbit · scroll to zoom")
+    ),
+    h("div", { className: "row3", style: { padding: "0 2px" } },
+      h(NumInput, { label: "Width (ft)", value: p.dims.w, min: 1, step: 0.5,
+        onChange: function(v){ p.setDims({ w: Math.max(1, v), d: p.dims.d, h: p.dims.h }); } }),
+      h(NumInput, { label: "Depth (ft)", value: p.dims.d, min: 1, step: 0.5,
+        onChange: function(v){ p.setDims({ w: p.dims.w, d: Math.max(1, v), h: p.dims.h }); } }),
+      h(NumInput, { label: "Ceiling height (ft)", value: p.dims.h, min: 1, step: 0.5,
+        onChange: function(v){ p.setDims({ w: p.dims.w, d: p.dims.d, h: Math.max(1, v) }); } })
+    ),
+    h("div", { style: { padding: "4px 2px 0" } },
+      h(Check, { label: "Cutaway view (see inside)", checked: p.cutaway, onChange: p.setCutaway })
+    )
+  );
+}
+
+/* ---------------- estimator panel ---------------- */
+function Estimator(p){
+  const est = useMemo(function(){ return calcEstimate(p.dims, p.opts, p.prices); },
+    [p.dims, p.opts, p.prices]);
+  const setOpt = function(k){ return function(v){ p.setOpts(Object.assign({}, p.opts, (function(o){ o[k] = v; return o; })({}))); }; };
+  const setPrice = function(k){ return function(v){ p.setPrices(Object.assign({}, p.prices, (function(o){ o[k] = v; return o; })({}))); }; };
+
+  const rows = est.lines.map(function(l, i){
+    return h("tr", { key: i },
+      h("td", null, l.label, l.note ? h("span", { className: "lnote" }, l.note) : null),
+      h("td", { className: "n" }, l.qty),
+      h("td", { className: "n" }, l.unit),
+      h("td", { className: "n" }, money(l.price)),
+      h("td", { className: "n" }, money(l.total))
+    );
+  });
+  rows.push(
+    h("tr", { key: "grand", className: "grand" },
+      h("td", { colSpan: 4 }, "Estimated total"),
+      h("td", { className: "n", id: "grandTotal" }, money(est.total))
+    )
+  );
+
+  return h("div", null,
+    h("div", { className: "stats" },
+      h("span", null, "Floor: ", h("b", null, q2(est.ceilA) + " sqft")),
+      h("span", null, "Walls: ", h("b", null, q2(est.wallGross) + " sqft")),
+      h("span", null, "Perimeter: ", h("b", null, q2(est.perim) + " ft"))
+    ),
+
+    h("div", { className: "sec" }, "Options"),
+    h(Check, { label: "Include ceiling drywall", checked: p.opts.ceiling, onChange: setOpt("ceiling") }),
+    h(Check, { label: "Frame new walls (2x4 studs)", checked: p.opts.frame, onChange: setOpt("frame") }),
+    h(Check, { label: "Insulation (walls R-13 + ceiling R-30)", checked: p.opts.insul, onChange: setOpt("insul") }),
+    h("label", { className: "field", style: { marginTop: 10 } },
+      h("span", { className: "flabel" }, "Flooring type"),
+      h("select", { value: p.opts.flooring, onChange: function(e){
+          const k = e.target.value;
+          p.setOpts(Object.assign({}, p.opts, { flooring: k }));
+          p.setPrices(Object.assign({}, p.prices, { floor: FLOORING[k].price }));
+        } },
+        Object.keys(FLOORING).map(function(k){
+          return h("option", { key: k, value: k },
+            FLOORING[k].name + " — " + money(FLOORING[k].price) + "/sqft");
+        })
+      )
+    ),
+
+    h("div", { className: "sec" }, "Electrical (quantities)"),
+    h("div", { className: "row3" },
+      h(NumInput, { label: "Outlets", value: p.opts.outlets, min: 0, step: 1, fallback: 0, onChange: setOpt("outlets") }),
+      h(NumInput, { label: "Switches", value: p.opts.switches, min: 0, step: 1, fallback: 0, onChange: setOpt("switches") }),
+      h(NumInput, { label: "Ceiling fixtures", value: p.opts.fixtures, min: 0, step: 1, fallback: 0, onChange: setOpt("fixtures") })
+    ),
+
+    h("div", { className: "sec" }, "Unit prices (editable)"),
+    h("div", { className: "prices" },
+      h(NumInput, { label: "Drywall sheet ($)", value: p.prices.drywall, min: 0, step: 0.5, onChange: setPrice("drywall") }),
+      h(NumInput, { label: "Stud 2x4x8 ($)", value: p.prices.stud, min: 0, step: 0.1, onChange: setPrice("stud") }),
+      h(NumInput, { label: "Insul. wall ($/sqft)", value: p.prices.insWall, min: 0, step: 0.05, onChange: setPrice("insWall") }),
+      h(NumInput, { label: "Insul. ceil ($/sqft)", value: p.prices.insCeil, min: 0, step: 0.05, onChange: setPrice("insCeil") }),
+      h(NumInput, { label: "Flooring ($/sqft)", value: p.prices.floor, min: 0, step: 0.1, onChange: setPrice("floor") }),
+      h(NumInput, { label: "Paint ($/gal)", value: p.prices.paint, min: 0, step: 1, onChange: setPrice("paint") }),
+      h(NumInput, { label: "Outlet ($/ea)", value: p.prices.outlet, min: 0, step: 0.5, onChange: setPrice("outlet") }),
+      h(NumInput, { label: "Switch ($/ea)", value: p.prices.sw, min: 0, step: 0.5, onChange: setPrice("sw") }),
+      h(NumInput, { label: "Fixture ($/ea)", value: p.prices.fixt, min: 0, step: 1, onChange: setPrice("fixt") }),
+      h(NumInput, { label: "Baseboard ($/ln ft)", value: p.prices.base, min: 0, step: 0.1, onChange: setPrice("base") })
+    ),
+
+    h("div", { className: "sec" }, "Materials takeoff"),
+    h("div", { className: "tablewrap" },
+      h("table", null,
+        h("thead", null,
+          h("tr", null,
+            h("th", null, "Item"),
+            h("th", { className: "n" }, "Qty"),
+            h("th", { className: "n" }, "Unit"),
+            h("th", { className: "n" }, "$/unit"),
+            h("th", { className: "n" }, "Total")
+          )
+        ),
+        h("tbody", null, rows)
+      )
+    ),
+    h("div", { className: "roughin" },
+      "Electrical rough-in labor is not included above — budget extra for an electrician if you are not DIYing it. " +
+      "Permit, HVAC, and garage-door wall close-off are also outside this estimate."
+    )
+  );
+}
+
+/* ---------------- app ---------------- */
+function App(){
+  const [dims, setDims] = useState({ w: 11, d: 12, h: 8 });
+  const [cutaway, setCutaway] = useState(true);
+  const [opts, setOpts] = useState({
+    ceiling: true, frame: true, insul: true, flooring: "lvp",
+    outlets: 6, switches: 2, fixtures: 1
+  });
+  const [prices, setPrices] = useState({
+    drywall: 16, stud: 4.50, insWall: 0.65, insCeil: 1.00,
+    floor: FLOORING.lvp.price, paint: 45,
+    outlet: 8, sw: 6, fixt: 35, base: 1.80
+  });
+
+  return h("div", { className: "wrap" },
+    h("header", null,
+      h("h1", null, "Garage Room Planner"),
+      h("p", null, "3D preview + blueprint materials estimator for the garage conversion")
+    ),
+    h("div", { className: "grid" },
+      h("div", { className: "card" },
+        h("div", { className: "card-h" }, "3D room view"),
+        h("div", { className: "card-b", style: { padding: 0 } },
+          h(RoomView, { dims: dims, setDims: setDims, cutaway: cutaway, setCutaway: setCutaway })
+        ),
+        h("div", { className: "card-b", style: { paddingTop: 14 } },
+          h("div", { style: { fontSize: 13, color: "#6b6b70", lineHeight: 1.5 } },
+            "Door (3 × 6.67 ft) and window (3 × 4 ft) are deducted from the drywall takeoff."
+          )
+        )
+      ),
+      h("div", { className: "card" },
+        h("div", { className: "card-h" }, "Blueprint estimator"),
+        h("div", { className: "card-b" },
+          h(Estimator, { dims: dims, opts: opts, setOpts: setOpts, prices: prices, setPrices: setPrices })
+        )
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>
